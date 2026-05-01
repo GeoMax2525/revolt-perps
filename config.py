@@ -49,6 +49,12 @@ TREND_TIMEFRAME = "4h"     # "1h", "4h", "1d"
 FUNDING_FILTER_ENABLED = True
 FUNDING_RATE_MAX = 0.05    # skip if funding rate against position > this %
 
+# ── Telegram ─────────────────────────────────────────────────────────────────
+import os
+BOT_TOKEN = os.getenv("PERPS_BOT_TOKEN", "8696824600:AAGATYta5OYnF0pftjDrFFkrR3IR3FZ9yw4")
+GROUP_ID = int(os.getenv("PERPS_GROUP_ID", "-1003852140576"))
+TOPIC_THREAD_ID = int(os.getenv("PERPS_TOPIC_ID", "3713"))
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
 LOG_FILE = "revolt_perps.log"
