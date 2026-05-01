@@ -123,6 +123,7 @@ async def _build_dashboard() -> str:
             curr_pnl_pct = 0
 
         pnl_bar = "🟢" if curr_pnl_pct >= 0 else "🔴"
+        curr_pnl_usd = cycle["total_size"] * (cycle["remaining_pct"] / 100) * curr_pnl_pct / 100
 
         lines += [
             "",
@@ -130,7 +131,7 @@ async def _build_dashboard() -> str:
             f"⚡ <b>ACTIVE CYCLE #{cycle['id']}</b>  |  {cycle['direction'].upper()}",
             f"",
             f"Entry: {_format_usd(cycle['avg_entry'])}  →  Now: {_format_usd(price)}",
-            f"{pnl_bar} Unrealized: {curr_pnl_pct:+.1f}%",
+            f"{pnl_bar} Unrealized: <b>{curr_pnl_pct:+.1f}%</b>  |  <b>{_format_usd(curr_pnl_usd)}</b>",
             f"Levels: {cycle['levels']}/{cycle['max_levels']}  |  Size: {_format_usd(cycle['total_size'])}",
             f"Remaining: {cycle['remaining_pct']:.0f}%  |  Realized: {_format_usd(cycle['realized_pnl'])}",
             f"Age: {cycle['age_minutes']:.0f} min",
