@@ -24,6 +24,7 @@ from config import (
     PARTIAL_TP_2_PCT, PARTIAL_TP_2_TRIGGER,
     MAX_ACCOUNT_RISK_PCT, MAX_DAILY_DRAWDOWN_PCT, EMERGENCY_SL_PCT,
     TREND_FILTER_ENABLED, FUNDING_FILTER_ENABLED, FUNDING_RATE_MAX,
+    RECAST_ENABLED,
 )
 from price_feed import get_btc_price, get_atr, get_ema, get_funding_rate
 
@@ -310,9 +311,9 @@ class MartingaleGridEngine:
                 close_pct, pnl_pct, profit, cycle.remaining_pct,
             )
 
-        # ── Main TP: +100% → close 50%, SL to -40% ──────────────────
+        # ── Main TP: +100% → take 90% off, recast with 10% ──────────
         if not cycle.main_tp_done and pnl_pct >= TP_TRIGGER_PCT:
-            close_pct = TP_CLOSE_PCT
+            close_pct = TP_CLOSE_PCT  # 90%
             close_value = position_value * close_pct / 100
             profit = close_value * pnl_pct / 100
             cycle.realized_pnl += profit
@@ -320,16 +321,47 @@ class MartingaleGridEngine:
             cycle.main_tp_done = True
             self.balance += profit
 
-            # Move SL to -40% from current price
-            if cycle.direction == "long":
-                cycle.sl_price = price * (1 - TP_REMAINING_SL_PCT / 100)
-            else:
-                cycle.sl_price = price * (1 + TP_REMAINING_SL_PCT / 100)
-
             logger.info(
-                "MAIN TP: closed %d%% at +%.1f%% | +$%.2f | SL moved to $%.2f | remaining=%.0f%%",
-                close_pct, pnl_pct, profit, cycle.sl_price, cycle.remaining_pct,
+                "MAIN TP: took %d%% off at +%.1f%% | +$%.2f | remaining=%.0f%%",
+                close_pct, pnl_pct, profit, cycle.remaining_pct,
             )
+
+            if RECAST_ENABLED:
+                # Recast: use remaining 10% as new base order for fresh grid
+                remaining_value = cycle.total_size_usd * (cycle.remaining_pct / 100)
+                await self._close_cycle("recast_tp", price, pnl_pct)
+
+                # Open new cycle with the remaining value as base order
+                self.cycle_count += 1
+                new_cycle = GridCycle(
+                    cycle_id=self.cycle_count,
+                    direction=cycle.direction,  # keep same direction
+                    start_time=time.time(),
+                )
+                level = GridLevel(
+                    level=1,
+                    entry_price=price,
+                    size_usd=remaining_value,
+                    filled=True,
+                    fill_price=price,
+                    fill_time=time.time(),
+                )
+                new_cycle.levels.append(level)
+                new_cycle.total_size_usd = remaining_value
+                new_cycle.avg_entry_price = price
+                self.active_cycle = new_cycle
+
+                logger.info(
+                    "RECAST: new cycle #%d at $%.2f | base=$%.2f (from 10%% remaining) | FREE TRADE",
+                    new_cycle.cycle_id, price, remaining_value,
+                )
+                return  # skip remaining checks, new cycle is active
+            else:
+                # No recast — just move SL on remaining
+                if cycle.direction == "long":
+                    cycle.sl_price = price * (1 - TP_REMAINING_SL_PCT / 100)
+                else:
+                    cycle.sl_price = price * (1 + TP_REMAINING_SL_PCT / 100)
 
         # ── Enhanced Partial TP 2: +150% → close 25% ────────────────
         if not cycle.partial_tp2_done and cycle.main_tp_done and pnl_pct >= PARTIAL_TP_2_TRIGGER:
