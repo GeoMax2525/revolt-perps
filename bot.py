@@ -18,7 +18,8 @@ import logging
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -52,14 +53,39 @@ def _format_usd(value: float) -> str:
     return f"${value:.2f}"
 
 
-# ── /perps — Main Dashboard ─────────────────────────────────────────────────
+def _perps_keyboard(has_cycle: bool, paused: bool):
+    """Build inline keyboard for the dashboard."""
+    builder = InlineKeyboardBuilder()
 
-@router.message(Command("perps"))
-async def cmd_perps(message: Message):
-    if not engine:
-        await message.reply("Bot not initialized yet.")
-        return
+    if has_cycle:
+        builder.row(
+            InlineKeyboardButton(text="🛑 Close Cycle", callback_data="perps:stop"),
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="⚡ Start Cycle", callback_data="perps:start"),
+        )
 
+    if paused:
+        builder.row(
+            InlineKeyboardButton(text="▶️ Resume", callback_data="perps:resume"),
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="⏸ Pause", callback_data="perps:pause"),
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="🔄 Refresh", callback_data="perps:refresh"),
+        InlineKeyboardButton(text="📊 Stats", callback_data="perps:stats"),
+        InlineKeyboardButton(text="⚙️ Config", callback_data="perps:config"),
+    )
+
+    return builder.as_markup()
+
+
+async def _build_dashboard() -> str:
+    """Build the dashboard text."""
     price = await get_btc_price()
     status = engine.get_status()
 
@@ -69,54 +95,81 @@ async def cmd_perps(message: Message):
 
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "🔮 REVOLT PERPS",
-        f"Strategy: Martingale Grid | {LEVERAGE}x",
+        "🔮 <b>REVOLT PERPS</b>",
+        f"Martingale Grid | {LEVERAGE}x Leverage",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
-        f"📊 BTC: {_format_usd(price)}",
-        f"💰 Balance: {_format_usd(status['balance'])} / {_format_usd(status['starting_balance'])}",
-        f"{pnl_emoji} PnL: {pnl_sign}{_format_usd(pnl)} ({pnl_sign}{status['pnl_pct']}%)",
+        f"📊 BTC: <b>{_format_usd(price)}</b>",
+        f"💰 Balance: <b>{_format_usd(status['balance'])}</b> / {_format_usd(status['starting_balance'])}",
+        f"{pnl_emoji} PnL: <b>{pnl_sign}{_format_usd(pnl)}</b> ({pnl_sign}{status['pnl_pct']}%)",
         f"📈 Peak: {_format_usd(status['peak_balance'])}",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "📋 PERFORMANCE",
-        f"Cycles: {status['total_cycles']} | W/L: {status['wins']}/{status['losses']}",
-        f"Win Rate: {status['win_rate']}%",
-        f"Total PnL: {_format_usd(status['total_pnl'])}",
-        f"Grid Spacing: {_format_usd(status['grid_spacing'])}",
-        "",
+        "<b>PERFORMANCE</b>",
+        f"Cycles: {status['total_cycles']}  |  W: {status['wins']}  L: {status['losses']}  |  {status['win_rate']}% WR",
+        f"Total PnL: {_format_usd(status['total_pnl'])}  |  Grid: {_format_usd(status['grid_spacing'])}",
     ]
 
-    # Active cycle info
     cycle = status.get("active_cycle")
     if cycle:
+        # Calculate current unrealized PnL
+        entry = cycle["avg_entry"]
+        if entry > 0:
+            if cycle.get("direction") == "long":
+                curr_pnl_pct = (price - entry) / entry * 100 * LEVERAGE
+            else:
+                curr_pnl_pct = (entry - price) / entry * 100 * LEVERAGE
+        else:
+            curr_pnl_pct = 0
+
+        pnl_bar = "🟢" if curr_pnl_pct >= 0 else "🔴"
+
         lines += [
+            "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"⚡ ACTIVE CYCLE #{cycle['id']}",
-            f"Direction: {cycle['direction'].upper()}",
-            f"Levels: {cycle['levels']}/{cycle['max_levels']}",
-            f"Avg Entry: {_format_usd(cycle['avg_entry'])}",
-            f"Size: {_format_usd(cycle['total_size'])}",
-            f"Remaining: {cycle['remaining_pct']}%",
-            f"Realized: {_format_usd(cycle['realized_pnl'])}",
+            f"⚡ <b>ACTIVE CYCLE #{cycle['id']}</b>  |  {cycle['direction'].upper()}",
+            f"",
+            f"Entry: {_format_usd(cycle['avg_entry'])}  →  Now: {_format_usd(price)}",
+            f"{pnl_bar} Unrealized: {curr_pnl_pct:+.1f}%",
+            f"Levels: {cycle['levels']}/{cycle['max_levels']}  |  Size: {_format_usd(cycle['total_size'])}",
+            f"Remaining: {cycle['remaining_pct']:.0f}%  |  Realized: {_format_usd(cycle['realized_pnl'])}",
             f"Age: {cycle['age_minutes']:.0f} min",
         ]
-        if cycle["sl_price"]:
+        if cycle.get("sl_price"):
             lines.append(f"SL: {_format_usd(cycle['sl_price'])}")
-        if cycle["main_tp_done"]:
-            lines.append("✅ Main TP hit — free trade mode")
+        if cycle.get("main_tp_done"):
+            lines.append("✅ <b>FREE TRADE MODE</b> — main TP hit, riding risk-free")
     else:
         lines += [
+            "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💤 No active cycle",
+            "💤 No active cycle — tap <b>Start Cycle</b> to begin",
         ]
 
     if status["paused"]:
-        lines += ["", f"⚠️ PAUSED: {status['pause_reason']}"]
+        lines += ["", f"⚠️ <b>PAUSED:</b> {status['pause_reason']}"]
 
     lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
 
-    await message.reply("\n".join(lines))
+    return "\n".join(lines)
+
+
+# ── /perps — Main Dashboard ─────────────────────────────────────────────────
+
+@router.message(Command("perps"))
+async def cmd_perps(message: Message):
+    if not engine:
+        await message.reply("Bot not initialized yet.")
+        return
+
+    text = await _build_dashboard()
+    status = engine.get_status()
+    keyboard = _perps_keyboard(
+        has_cycle=status.get("active_cycle") is not None,
+        paused=status["paused"],
+    )
+
+    await message.reply(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 # ── /start — Start new cycle ─────────────────────────────────────────────────
@@ -276,6 +329,167 @@ async def cmd_config(message: Message):
     ]
 
     await message.reply("\n".join(lines))
+
+
+# ── Notification helper ──────────────────────────────────────────────────────
+
+# ── Callback handlers for buttons ────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("perps:"))
+async def cb_perps(callback: CallbackQuery):
+    if not engine:
+        await callback.answer("Bot not initialized.")
+        return
+
+    action = callback.data.split(":", 1)[1]
+
+    if action == "refresh":
+        await callback.answer("Refreshing...")
+        text = await _build_dashboard()
+        status = engine.get_status()
+        keyboard = _perps_keyboard(
+            has_cycle=status.get("active_cycle") is not None,
+            paused=status["paused"],
+        )
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    elif action == "start":
+        if engine.active_cycle:
+            await callback.answer("Already have an active cycle.", show_alert=True)
+            return
+        if engine.paused:
+            engine.paused = False
+            engine.pause_reason = ""
+        await engine.open_new_cycle()
+        await callback.answer("Cycle started!" if engine.active_cycle else "Could not start — check filters.")
+        text = await _build_dashboard()
+        status = engine.get_status()
+        keyboard = _perps_keyboard(
+            has_cycle=status.get("active_cycle") is not None,
+            paused=status["paused"],
+        )
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    elif action == "stop":
+        if not engine.active_cycle:
+            await callback.answer("No active cycle.", show_alert=True)
+            return
+        price = await get_btc_price()
+        cycle = engine.active_cycle
+        if cycle.direction == "long":
+            pnl_pct = (price - cycle.avg_entry_price) / cycle.avg_entry_price * 100 * LEVERAGE
+        else:
+            pnl_pct = (cycle.avg_entry_price - price) / cycle.avg_entry_price * 100 * LEVERAGE
+        await engine._close_cycle("manual", price, pnl_pct)
+        await callback.answer("Cycle closed.")
+        text = await _build_dashboard()
+        status = engine.get_status()
+        keyboard = _perps_keyboard(has_cycle=False, paused=status["paused"])
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    elif action == "pause":
+        engine.paused = True
+        engine.pause_reason = "Manual pause"
+        await callback.answer("Bot paused.")
+        text = await _build_dashboard()
+        status = engine.get_status()
+        keyboard = _perps_keyboard(
+            has_cycle=status.get("active_cycle") is not None,
+            paused=True,
+        )
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    elif action == "resume":
+        engine.paused = False
+        engine.pause_reason = ""
+        await callback.answer("Bot resumed.")
+        text = await _build_dashboard()
+        status = engine.get_status()
+        keyboard = _perps_keyboard(
+            has_cycle=status.get("active_cycle") is not None,
+            paused=False,
+        )
+        try:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    elif action == "stats":
+        await callback.answer()
+        if not engine.completed_cycles:
+            await callback.message.reply("No completed cycles yet.")
+            return
+        cycles = engine.completed_cycles
+        profits = [c.close_pnl for c in cycles if c.close_pnl >= 0]
+        losses = [c.close_pnl for c in cycles if c.close_pnl < 0]
+        avg_profit = sum(profits) / len(profits) if profits else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        best = max(c.close_pnl for c in cycles)
+        worst = min(c.close_pnl for c in cycles)
+        avg_levels = sum(len(c.levels) for c in cycles) / len(cycles)
+        status = engine.get_status()
+
+        text = "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 <b>DETAILED STATS</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Total Cycles: {len(cycles)}",
+            f"Wins: {status['wins']}  |  Losses: {status['losses']}  |  WR: {status['win_rate']}%",
+            "",
+            f"Avg Win: {_format_usd(avg_profit)}",
+            f"Avg Loss: {_format_usd(avg_loss)}",
+            f"Best: {_format_usd(best)}",
+            f"Worst: {_format_usd(worst)}",
+            f"Avg Grid Depth: {avg_levels:.1f} levels",
+            "",
+            f"Total PnL: <b>{_format_usd(status['total_pnl'])}</b>",
+            f"Balance: <b>{_format_usd(status['balance'])}</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        await callback.message.reply(text, parse_mode="HTML")
+
+    elif action == "config":
+        await callback.answer()
+        from config import (
+            GRID_SPACING_MODE, ATR_MULTIPLIER, GRID_SPACING_FIXED,
+            TP_TRIGGER_PCT, TP_CLOSE_PCT, TP_REMAINING_SL_PCT,
+            MAX_ACCOUNT_RISK_PCT, MAX_DAILY_DRAWDOWN_PCT, EMERGENCY_SL_PCT,
+            TREND_FILTER_ENABLED, FUNDING_FILTER_ENABLED, BASE_ORDER_PCT,
+        )
+        text = "\n".join([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚙️ <b>CONFIGURATION</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            f"Leverage: {LEVERAGE}x",
+            f"Max Grid Levels: {MAX_GRID_LEVELS}",
+            f"Base Order: {BASE_ORDER_PCT}% of account",
+            f"Grid: {GRID_SPACING_MODE.upper()} ({ATR_MULTIPLIER}x ATR)" if GRID_SPACING_MODE == "atr" else f"Grid: Fixed ${GRID_SPACING_FIXED}",
+            "",
+            f"TP: +{TP_TRIGGER_PCT}% → close {TP_CLOSE_PCT}%",
+            f"Remaining SL: -{TP_REMAINING_SL_PCT}%",
+            "",
+            f"Max Risk: {MAX_ACCOUNT_RISK_PCT}%",
+            f"Daily DD Pause: {MAX_DAILY_DRAWDOWN_PCT}%",
+            f"Emergency SL: {EMERGENCY_SL_PCT}%",
+            f"Trend Filter: {'ON' if TREND_FILTER_ENABLED else 'OFF'}",
+            f"Funding Filter: {'ON' if FUNDING_FILTER_ENABLED else 'OFF'}",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ])
+        await callback.message.reply(text, parse_mode="HTML")
 
 
 # ── Notification helper ──────────────────────────────────────────────────────
